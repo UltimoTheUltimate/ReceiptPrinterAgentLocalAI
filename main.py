@@ -35,6 +35,8 @@ def main():
     print("\n🤖 Processing with AI...")
     ai_response = get_task_from_ai(task_description)
 
+    print(f"\n[DEBUG] Raw AI response:\n{ai_response}\n")
+
     if not ai_response or ai_response.startswith("Error"):
         print(f"ERROR: {ai_response or 'Failed to get response'}")
         return

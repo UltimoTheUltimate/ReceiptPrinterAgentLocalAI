@@ -6,8 +6,11 @@ from openai import OpenAI
 
 
 def get_task_from_ai(task_description):
-    """Get a formatted task from OpenAI API."""
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    # Use Ollama's OpenAI-compatible API endpoint
+    client = OpenAI(
+        base_url=os.getenv("OLLAMA_API_URL", "http://localhost:11434/v1"),
+        api_key="ollama",  # Ollama ignores the key, but OpenAI client requires it
+    )
 
     prompt = f"""
     Convert this task description into a clear, concise task name:
@@ -25,9 +28,9 @@ def get_task_from_ai(task_description):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=1000,
             temperature=0.3,
         )
         return response.choices[0].message.content
@@ -37,7 +40,11 @@ def get_task_from_ai(task_description):
 
 def analyze_emails_for_tasks(emails_content):
     """Analyze Gmail emails to identify actionable tasks."""
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    # Use Ollama's OpenAI-compatible API endpoint
+    client = OpenAI(
+        base_url=os.getenv("OLLAMA_API_URL", "http://localhost:11434/v1"),
+        api_key="ollama",  # Ollama ignores the key, but OpenAI client requires it
+    )
 
     prompt = f"""
     You are an email assistant. Look at these emails and find ANY that might need a response, follow-up, or action.
@@ -69,7 +76,7 @@ def analyze_emails_for_tasks(emails_content):
 
     try:
         response = client.chat.completions.create(
-            model="o4-mini",
+            model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
         )
@@ -104,7 +111,7 @@ def analyze_emails_for_tasks(emails_content):
                 """
 
                 fallback_response = client.chat.completions.create(
-                    model="o4-mini",
+                    model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
                     messages=[{"role": "user", "content": simple_prompt}],
                     max_tokens=1000,
                     temperature=0.1,
@@ -135,6 +142,7 @@ def parse_task_analysis(analysis_response):
 
     try:
         import json
+
 
         # Parse the JSON response
         response_data = json.loads(analysis_response)
