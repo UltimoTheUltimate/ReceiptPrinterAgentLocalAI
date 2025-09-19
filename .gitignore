@@ -86,3 +86,6 @@ secrets/
 htmlcov/
 .coverage
 .coverage.*
+test.py
+credentials.json
+token.json

@@ -22,17 +22,16 @@ except ImportError:
 def create_task_html(task):
     """Create HTML content for task card with ticket-style design."""
     # Use the due_date from task if it's a Task object, otherwise use current date
-    if hasattr(task, 'due_date'):
-        # Parse ISO format date string
-        from datetime import datetime as dt
-        due_date_obj = dt.fromisoformat(task.due_date.replace('Z', '+00:00'))
-        due_date_text = due_date_obj.strftime('%B %d')
-        day = due_date_obj.day
+    from datetime import datetime as dt
+    if hasattr(task, 'due_date') and task.due_date:
+        try:
+            due_date_obj = dt.fromisoformat(str(task.due_date).replace('Z', '+00:00'))
+        except Exception:
+            due_date_obj = datetime.now()
     else:
-        # Fallback for dict format
-        due_date = datetime.now().strftime("%B %d")
-        day = int(datetime.now().strftime("%d"))
-        due_date_text = due_date
+        due_date_obj = datetime.now()
+    due_date_text = due_date_obj.strftime('%B %d')
+    day = due_date_obj.day
     
     if 4 <= day <= 20 or 24 <= day <= 30:
         suffix = "th"
@@ -60,6 +59,13 @@ def create_task_html(task):
             priority_dots = "⚡"
             priority_text = "LOW PRIORITY"
     
+    # Null-safe extraction of all possible fields
+    title = getattr(task, 'name', None) or getattr(task, 'title', None) or task.get('title', '') if isinstance(task, dict) else ''
+    priority = priority_text
+    due_date = due_date_text
+    reason = getattr(task, 'reason', None) or (task.get('reason', '') if isinstance(task, dict) else '')
+    sender = getattr(task, 'from', None) or (task.get('from', '') if isinstance(task, dict) else '')
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -71,7 +77,6 @@ def create_task_html(task):
                 padding: 0;
                 box-sizing: border-box;
             }}
-            
             body {{
                 font-family: 'Segoe UI', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Apple Color Emoji', 'Noto Color Emoji', Arial, sans-serif;
                 background-color: white;
@@ -79,17 +84,14 @@ def create_task_html(task):
                 padding: 0;
                 margin: 0;
             }}
-            
             .ticket-container {{
                 background: white;
                 padding: 10px 5px;
             }}
-            
             .header {{
                 text-align: center;
                 margin-bottom: 5px;
             }}
-            
             .ticket-label {{
                 font-size: 24px;
                 font-weight: bold;
@@ -97,8 +99,6 @@ def create_task_html(task):
                 color: #000;
                 margin-bottom: 16px;
             }}
-            
-            
             .priority-dots {{
                 font-size: 48px;
                 font-weight: bold;
@@ -106,7 +106,6 @@ def create_task_html(task):
                 color: #000;
                 font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI', Arial, sans-serif;
             }}
-            
             .perforation {{
                 background: repeating-linear-gradient(
                     to right,
@@ -118,12 +117,10 @@ def create_task_html(task):
                 height: 3px;
                 margin: 5px 0;
             }}
-            
             .task-title {{
                 text-align: center;
                 padding: 10px 0;
             }}
-            
             .task-title h1 {{
                 font-size: 48px;
                 font-weight: bold;
@@ -136,27 +133,31 @@ def create_task_html(task):
                 margin: 0;
                 padding: 0 10px;
             }}
-            
             .dashed-line {{
                 border-top: 3px dashed #666;
                 margin: 5px 0;
             }}
-            
             .due-date {{
                 text-align: center;
             }}
-            
-            
             .due-date-text {{
                 font-size: 32px;
                 font-weight: bold;
                 color: #000;
             }}
-            
+            .info-section {{
+                margin: 10px 0;
+                padding: 0 10px;
+                font-size: 20px;
+                color: #222;
+            }}
+            .info-label {{
+                font-weight: bold;
+                color: #444;
+            }}
             .bottom-perforation {{
                 margin-top: 6px;
             }}
-            
         </style>
     </head>
     <body>
@@ -165,20 +166,21 @@ def create_task_html(task):
             <div class="header">
                 <div class="priority-dots">{priority_dots}</div>
             </div>
-            
             <!-- Task Title -->
             <div class="task-title">
-                <h1>{task.name if hasattr(task, 'name') else task["title"]}</h1>
+                <h1>{getattr(task, 'name', None) or getattr(task, 'title', None) or (task.get('title', '') if isinstance(task, dict) else '')}</h1>
             </div>
-            
             <!-- Dashed Separator -->
             <div class="dashed-line"></div>
-            
             <!-- Due Date Section -->
             <div class="due-date">
                 <div class="due-date-text">{due_date_text}</div>
             </div>
-            
+            <!-- Info Section: Sender and Reason -->
+            <div class="info-section">
+                <span class="info-label">From:</span> {sender if sender else 'Unknown'}<br>
+                <span class="info-label">Reason:</span> {reason if reason else 'No reason provided'}
+            </div>
             <!-- Bottom Perforation -->
             <div class="perforation bottom-perforation"></div>
         </div>

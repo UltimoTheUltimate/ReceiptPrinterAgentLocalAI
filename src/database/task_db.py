@@ -35,9 +35,13 @@ class TaskDatabase:
         """Initialize database connection."""
         self.db_url = db_url or os.getenv("TURSO_DATABASE_URL")
         self.auth_token = auth_token or os.getenv("TURSO_AUTH_TOKEN")
-        self.openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.embedding_model = "text-embedding-3-small"
-        self.embedding_dimensions = 1536  # Default for text-embedding-3-small
+        # Use local AI instance for embeddings
+        self.openai = OpenAI(
+            base_url=os.getenv("OLLAMA_API_URL", "http://localhost:11434/v1"),
+            api_key="ollama",  # Ollama ignores the key, but OpenAI client requires it
+        )
+        self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+        self.embedding_dimensions = 768  # Adjust to your local model's output size
 
         # Connect to database
         if self.db_url and self.auth_token:
@@ -72,7 +76,7 @@ class TaskDatabase:
         cursor.close()
 
     def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for given text using OpenAI."""
+        """Generate embedding for given text using local AI instance."""
         response = self.openai.embeddings.create(model=self.embedding_model, input=text)
         return response.data[0].embedding
 

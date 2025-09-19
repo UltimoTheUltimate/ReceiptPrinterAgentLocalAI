@@ -30,7 +30,7 @@ def get_task_from_ai(task_description):
         response = client.chat.completions.create(
             model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=10000,
             temperature=0.3,
         )
         return response.choices[0].message.content
@@ -81,48 +81,51 @@ def analyze_emails_for_tasks(emails_content):
             response_format={"type": "json_object"},
         )
 
-        print(f"DEBUG: Full response object: {response}")
-
         if response.choices and len(response.choices) > 0:
             message = response.choices[0].message
             content = message.content
             refusal = getattr(message, "refusal", None)
 
-            print(f"DEBUG: Raw OpenAI response: {content}")
-            print(f"DEBUG: OpenAI refusal: {refusal}")
-
             if content is None and refusal:
-                print(
-                    "DEBUG: OpenAI refused to generate content, trying simpler prompt..."
-                )
                 # Try with a simpler prompt without strict JSON formatting
                 simple_prompt = f"""
                 Look at these emails and identify any that need a response or action:
-                
+
                 {emails_content[:2000]}
-                
-                For each actionable email, provide:
-                - Task title
-                - From whom
-                - Priority (HIGH/MEDIUM/LOW)
-                - Why it needs action
-                
-                Return as JSON array or return empty array [] if no actionable items.
+
+                For each actionable email, provide a JSON object with:
+                - "title": What needs to be done in under 25 characters
+                - "from": Who sent it
+                - "priority": HIGH, MEDIUM, or LOW
+                - "deadline": Any mentioned deadline or "None"
+                - "reason": Why this needs attention
+
+                Return a JSON array of such objects in exactly this format. Example:
+                [
+                  {{
+                    "title": "Reply to project update",
+                    "from": "alice@example.com",
+                    "priority": "HIGH",
+                    "deadline": "2025-09-20",
+                    "reason": "Project update requires response"
+                  }}
+                ]
+
+                If truly nothing needs action, return: []
                 """
 
                 fallback_response = client.chat.completions.create(
                     model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
                     messages=[{"role": "user", "content": simple_prompt}],
-                    max_tokens=1000,
+                    max_tokens=10000,
                     temperature=0.1,
                 )
 
                 fallback_content = fallback_response.choices[0].message.content
-                print(f"DEBUG: Fallback response: {fallback_content}")
+                print("AI reply:", fallback_content)
                 return fallback_content or "Error: OpenAI returned None content"
 
             if content is None:
-                print("DEBUG: OpenAI returned None content")
                 return "Error: OpenAI returned None content"
 
             return content
@@ -131,7 +134,6 @@ def analyze_emails_for_tasks(emails_content):
 
     except Exception as e:
         error_msg = f"Error: {str(e)}"
-        print(f"DEBUG: OpenAI API error: {error_msg}")
         return error_msg
 
 
@@ -152,11 +154,13 @@ def parse_task_analysis(analysis_response):
             # Direct array of tasks
             tasks = response_data
         elif isinstance(response_data, dict):
-            # Check if it's wrapped in an object
+            # Check for common wrappers
             if "tasks" in response_data:
                 tasks = response_data["tasks"]
             elif "data" in response_data:
                 tasks = response_data["data"]
+            elif "items" in response_data:
+                tasks = response_data["items"]
             else:
                 # Assume the dict itself is a single task
                 tasks = [response_data]
@@ -167,28 +171,22 @@ def parse_task_analysis(analysis_response):
         valid_tasks = []
         for task in tasks:
             if isinstance(task, dict) and "title" in task:
-                # Ensure all required fields exist with defaults
+                # Support alternative key names for sender and reason
+                sender = task.get("from") or task.get("sender") or task.get("email") or "Unknown"
+                reason = task.get("reason") or task.get("why") or task.get("description") or "No reason provided"
                 clean_task = {
                     "title": task.get("title", "").strip()[:50],  # Limit title length
-                    "from": task.get("from", "Unknown").strip()[
-                        :30
-                    ],  # Limit sender length
+                    "from": str(sender).strip()[:30],  # Limit sender length
                     "priority": task.get("priority", "MEDIUM").strip().upper(),
-                    "deadline": task.get("deadline", "None").strip()[
-                        :20
-                    ],  # Limit deadline length
-                    "reason": task.get("reason", "No reason provided").strip()[
-                        :100
-                    ],  # Limit reason length
+                    "deadline": task.get("deadline", "None").strip()[:20],  # Limit deadline length
+                    "reason": str(reason).strip()[:100],  # Limit reason length
                 }
-
                 # Only add if we have a meaningful task title
                 if clean_task["title"] and len(clean_task["title"]) > 3:
                     # Validate priority
                     if clean_task["priority"] not in ["HIGH", "MEDIUM", "LOW"]:
                         clean_task["priority"] = "MEDIUM"
                     valid_tasks.append(clean_task)
-
         return valid_tasks
 
     except json.JSONDecodeError as e:
