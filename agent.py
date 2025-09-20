@@ -70,43 +70,70 @@ async def extract_email_tasks(
     try:
         creds = get_gmail_credentials()
         service = build('gmail', 'v1', credentials=creds)
-        results = service.users().messages().list(userId='me', maxResults=20).execute()
+        # Set number of days ago
+        days_ago = int(os.getenv('EMAIL_DAYS_AGO', '7'))  # Default to 7 days
+        after_date = (datetime.datetime.now() - datetime.timedelta(days=days_ago)).strftime('%Y/%m/%d')
+        query = f'after:{after_date.replace("/", "/")}'
+        results = service.users().messages().list(userId='me', q=query, maxResults=20).execute()
         messages = results.get('messages', [])
-        formatted_emails = []
+        all_tasks = []
         for msg in messages:
             msg_data = service.users().messages().get(userId='me', id=msg['id']).execute()
-            snippet = msg_data.get('snippet', '')
-            headers = msg_data.get('payload', {}).get('headers', [])
+            # Extract full body from Gmail message payload
+            payload = msg_data.get('payload', {})
+            body = ''
+            if 'parts' in payload:
+                for part in payload['parts']:
+                    if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
+                        import base64
+                        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                        break
+            elif 'body' in payload and 'data' in payload['body']:
+                import base64
+                body = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
+            else:
+                body = msg_data.get('snippet', '')
+
+            headers = payload.get('headers', [])
             sender = None
             subject = None
+            date_str = None
             for h in headers:
                 if h['name'].lower() == 'from':
                     sender = h['value']
                 if h['name'].lower() == 'subject':
                     subject = h['value']
-            formatted_email = f"From: {sender if sender else 'Unknown'}\nSubject: {subject if subject else ''}\nBody: {snippet}"
-            formatted_emails.append(formatted_email)
-        emails_content = '\n---\n'.join(formatted_emails)
+                if h['name'].lower() == 'date':
+                    date_str = h['value']
+            formatted_email = f"From: {sender if sender else 'Unknown'}\nSubject: {subject if subject else ''}\nDate: {date_str if date_str else ''}\nBody: {body}"
+            print("\n--- EMAIL CONTENT ---")
+            print(formatted_email)
+            print("--- END EMAIL CONTENT ---\n")
+            # Prompt AI for this email only
+            ai_response = analyze_emails_for_tasks(formatted_email)
+            print("\n[DEBUG] Raw AI response:\n", ai_response, "\n")
+            tasks = parse_task_analysis(ai_response)
+            all_tasks.extend(tasks)
+        summary = f"Extracted {len(all_tasks)} tasks from emails after {after_date}."
+        return {"tasks": all_tasks, "summary": summary}
     except Exception as e:
         print(f"[WARN] Could not fetch emails via Gmail API: {e}\nUsing placeholder emails.")
-        emails_content = """
-        From: alice@example.com\nSubject: Project Update\nBody: Please review the attached report by Friday.\n---\nFrom: bob@example.com\nSubject: Team Meeting\nBody: Don't forget the team meeting tomorrow at 10am.\n---\nFrom: promo@store.com\nSubject: Special Offer\nBody: This is a promotional offer, ignore.\n        """
-
-    # Print the email content
-    print("\n--- EMAIL CONTENT ---")
-    print(emails_content)
-    print("--- END EMAIL CONTENT ---\n")
-
-    # Send to local AI endpoint
-    ai_response = analyze_emails_for_tasks(emails_content)
-    print("\n[DEBUG] Raw AI response:\n", ai_response, "\n")
-    tasks = parse_task_analysis(ai_response)
-
-    # Compose summary
-    summary = f"Extracted {len(tasks)} tasks from emails."
-
-    # Return both the full dicts and the summary
-    return {"tasks": tasks, "summary": summary}
+        emails = [
+            "From: alice@example.com\nSubject: Project Update\nDate: 2025-09-18\nBody: Please review the attached report by Friday.",
+            "From: bob@example.com\nSubject: Team Meeting\nDate: 2025-09-18\nBody: Don't forget the team meeting tomorrow at 10am.",
+            "From: promo@store.com\nSubject: Special Offer\nDate: 2025-09-18\nBody: This is a promotional offer, ignore."
+        ]
+        all_tasks = []
+        for formatted_email in emails:
+            print("\n--- EMAIL CONTENT ---")
+            print(formatted_email)
+            print("--- END EMAIL CONTENT ---\n")
+            ai_response = analyze_emails_for_tasks(formatted_email)
+            print("\n[DEBUG] Raw AI response:\n", ai_response, "\n")
+            tasks = parse_task_analysis(ai_response)
+            all_tasks.extend(tasks)
+        summary = f"Extracted {len(all_tasks)} tasks from placeholder emails."
+        return {"tasks": all_tasks, "summary": summary}
 
 
 async def main():
@@ -150,23 +177,36 @@ async def main():
             print(f"   Priority: {priority_map.get(task['priority'], '❓ UNKNOWN')}")
             print(f"   Due: {task.get('deadline', '')}")
 
-            # Check for duplicates
+            # Improved duplicate detection
+            normalized_title = task['title'].strip().lower()
+            task_priority = {"HIGH": 1, "MEDIUM": 2, "LOW": 3}.get(task['priority'], 2)
+            task_deadline = task.get('deadline', '').strip()
             is_duplicate = False
-            similar_tasks = db.find_similar_tasks(task['title'])
-            if (
-                similar_tasks
-                and len(similar_tasks) > 0
-                and similar_tasks[0].similarity_distance < 0.1
-            ):
-                is_duplicate = True
-                duplicate_tasks.append(task)
+            similar_tasks = db.find_similar_tasks(normalized_title)
+            if similar_tasks and len(similar_tasks) > 0:
+                for sim_task in similar_tasks:
+                    sim_title = getattr(sim_task, 'name', '').strip().lower()
+                    sim_priority = getattr(sim_task, 'priority', 2)
+                    sim_deadline = getattr(sim_task, 'due_date', '').strip()
+                    sim_distance = getattr(sim_task, 'similarity_distance', None)
+                    # Stricter threshold and compare more fields
+                    if (
+                        sim_distance is not None and sim_distance < 0.05 and
+                        sim_title == normalized_title and
+                        sim_priority == task_priority and
+                        sim_deadline == task_deadline
+                    ):
+                        is_duplicate = True
+                        duplicate_tasks.append(task)
+                        break
+            if is_duplicate:
                 continue
 
             # Add new task to database
             db_task = TaskRecord(
                 name=task['title'],
-                priority={"HIGH": 1, "MEDIUM": 2, "LOW": 3}.get(task['priority'], 2),
-                due_date=task.get('deadline', ''),
+                priority=task_priority,
+                due_date=task_deadline,
                 created_at=datetime.datetime.now().isoformat(),
             )
             db.add_task(db_task)

@@ -1,17 +1,10 @@
-"""OpenAI API client for task generation."""
+"""Ollama API client for task generation."""
 
 import os
-
-from openai import OpenAI
+import ollama
 
 
 def get_task_from_ai(task_description):
-    # Use Ollama's OpenAI-compatible API endpoint
-    client = OpenAI(
-        base_url=os.getenv("OLLAMA_API_URL", "http://localhost:11434/v1"),
-        api_key="ollama",  # Ollama ignores the key, but OpenAI client requires it
-    )
-
     prompt = f"""
     Convert this task description into a clear, concise task name:
 
@@ -27,39 +20,41 @@ def get_task_from_ai(task_description):
     """
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
+        response = ollama.chat(
+            model="deepseek-r1:14b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=10000,
-            temperature=0.3,
+            options={"temperature": 0.3, "num_predict": 10000}
         )
-        return response.choices[0].message.content
+        return response['message']['content']
     except Exception as e:
         return f"Error: {str(e)}"
 
 
 def analyze_emails_for_tasks(emails_content):
     """Analyze Gmail emails to identify actionable tasks."""
-    # Use Ollama's OpenAI-compatible API endpoint
-    client = OpenAI(
-        base_url=os.getenv("OLLAMA_API_URL", "http://localhost:11434/v1"),
-        api_key="ollama",  # Ollama ignores the key, but OpenAI client requires it
-    )
-
     prompt = f"""
-    You are an email assistant. Look at these emails and find ANY that might need a response, follow-up, or action.
+    You are an email assistant. Look at this email and identify one or more tasks that require action.
 
     Emails:
     {emails_content}
 
-    Be LIBERAL in what you consider actionable. Include:
-    - Meeting invites or webinars (even if promotional)
+    You may Include:
+    - Meeting invites or webinars
     - Requests for information or responses
-    - Business opportunities
     - Project updates that need acknowledgment
     - Anything from real people (not just automated systems)
     - Time-sensitive content
     - Collaboration requests
+
+    Do NOT include:
+    - Purely promotional emails with no call to action
+    - Newsletters or informational emails that don't require a response
+    - Social media notifications
+    - System alerts or automated messages with no action needed
+    - Any sales or marketing emails
+    - Promotional, marketing, and automated system emails (e.g., newsletters, offers, sales, login codes, notifications, Quillbot, Ground News, Heavyocity, etc.)
+
+    Only include emails that require a genuine response or action from you, especially those sent by real people or related to your work, projects, or meetings.
 
     For each email that needs ANY kind of action, create a task with:
     - title: What needs to be done
@@ -68,70 +63,20 @@ def analyze_emails_for_tasks(emails_content):
     - deadline: Any mentioned deadline or "None"
     - reason: Why this needs attention
 
-    Return a JSON array of tasks. Be generous - when in doubt, include it.
-    Format: [{{"title": "...", "from": "...", "priority": "...", "deadline": "...", "reason": "..."}}]
-
-    If truly nothing needs action, return: []
+    Return ONLY the JSON array. NO explanation and NO extra text other than the JSON array.
+    Return ONLY the tasks in ONLY the following format. : [{{"title": "...", "from": "...", "priority": "...", "deadline": "...", "reason": "..."}}]
+    Your full response will be parsed as JSON by a script.
+    If the email does not require attention simply return []
     """
+        
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
+        response = ollama.chat(
+            model="deepseek-r1:14b",
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+            options={"temperature": 0.3, "num_predict": 10000}
         )
-
-        if response.choices and len(response.choices) > 0:
-            message = response.choices[0].message
-            content = message.content
-            refusal = getattr(message, "refusal", None)
-
-            if content is None and refusal:
-                # Try with a simpler prompt without strict JSON formatting
-                simple_prompt = f"""
-                Look at these emails and identify any that need a response or action:
-
-                {emails_content[:2000]}
-
-                For each actionable email, provide a JSON object with:
-                - "title": What needs to be done in under 25 characters
-                - "from": Who sent it
-                - "priority": HIGH, MEDIUM, or LOW
-                - "deadline": Any mentioned deadline or "None"
-                - "reason": Why this needs attention
-
-                Return a JSON array of such objects in exactly this format. Example:
-                [
-                  {{
-                    "title": "Reply to project update",
-                    "from": "alice@example.com",
-                    "priority": "HIGH",
-                    "deadline": "2025-09-20",
-                    "reason": "Project update requires response"
-                  }}
-                ]
-
-                If truly nothing needs action, return: []
-                """
-
-                fallback_response = client.chat.completions.create(
-                    model="deepseek-r1:14b",  # Use DeepSeek 14B model (Ollama)
-                    messages=[{"role": "user", "content": simple_prompt}],
-                    max_tokens=10000,
-                    temperature=0.1,
-                )
-
-                fallback_content = fallback_response.choices[0].message.content
-                print("AI reply:", fallback_content)
-                return fallback_content or "Error: OpenAI returned None content"
-
-            if content is None:
-                return "Error: OpenAI returned None content"
-
-            return content
-        else:
-            return "Error: No response choices from OpenAI"
-
+        return response['message']['content']
     except Exception as e:
         error_msg = f"Error: {str(e)}"
         return error_msg
@@ -142,12 +87,15 @@ def parse_task_analysis(analysis_response):
     if not analysis_response or analysis_response.startswith("Error:"):
         return []
 
+    # Remove <think>...</think> sections if present
+    import re
+    cleaned_response = re.sub(r'<think>.*?</think>', '', analysis_response, flags=re.DOTALL)
+
     try:
         import json
 
-
         # Parse the JSON response
-        response_data = json.loads(analysis_response)
+        response_data = json.loads(cleaned_response)
 
         # Handle different JSON structures
         if isinstance(response_data, list):
