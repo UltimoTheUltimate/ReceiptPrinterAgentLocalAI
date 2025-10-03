@@ -37,16 +37,20 @@ def main():
 
     print(f"\n[DEBUG] Raw AI response:\n{ai_response}\n")
 
-    if not ai_response or ai_response.startswith("Error"):
-        print(f"ERROR: {ai_response or 'Failed to get response'}")
+    # Handle error or empty response
+    if not ai_response or (isinstance(ai_response, dict) and ai_response.get('title', '').startswith('Error')):
+        print(f"ERROR: {ai_response if isinstance(ai_response, str) else ai_response.get('title', 'Failed to get response')}")
         return
 
-    # Parse AI response
-    task_data = parse_ai_response(ai_response)
+    # If response is a dict, use it directly; else parse
+    if isinstance(ai_response, dict):
+        task_data = ai_response
+    else:
+        task_data = parse_ai_response(ai_response)
 
-    print(f"\n✅ Generated Task: {task_data['title']}")
-    print(f"📌 Priority: {task_data['priority']}")
-    print(f"📅 Due: {task_data.get('due_date', 'Today')}")
+    print(f"\n✅ Generated Task: {task_data.get('title', 'TASK')}")
+    print(f"📌 Priority: {task_data.get('priority', 'MEDIUM')}")
+    print(f"📅 Due: {task_data.get('deadline', 'Today')}")
 
     # Create outputs
     print("\n📄 Creating outputs...")

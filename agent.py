@@ -54,6 +54,7 @@ class Task(BaseModel):
 
 async def extract_email_tasks(
     user_email: Optional[str] = None,
+    db=None
     ) -> dict:
     """
     Extract tasks from Gmail emails using local AI endpoint.
@@ -78,21 +79,52 @@ async def extract_email_tasks(
         messages = results.get('messages', [])
         all_tasks = []
         for msg in messages:
-            msg_data = service.users().messages().get(userId='me', id=msg['id']).execute()
+            msg_id = msg['id']
+            # Check if this email has already been processed
+            if hasattr(db, 'email_exists'):
+                if db.email_exists(msg_id):
+                    print(f"[SKIP] Email {msg_id} already processed.")
+                    continue
+            msg_data = service.users().messages().get(userId='me', id=msg_id).execute()
             # Extract full body from Gmail message payload
             payload = msg_data.get('payload', {})
             body = ''
+            import base64
             if 'parts' in payload:
                 for part in payload['parts']:
-                    if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
-                        import base64
-                        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                    if 'data' in part.get('body', {}):
+                        decoded = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
+                        body = decoded
                         break
             elif 'body' in payload and 'data' in payload['body']:
-                import base64
                 body = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='ignore')
             else:
                 body = msg_data.get('snippet', '')
+
+            # Strip HTML/XML tags from body
+            try:
+                from bs4 import BeautifulSoup
+                body = BeautifulSoup(body, "html.parser").get_text()
+            except ImportError:
+                import re
+                body = re.sub(r'<[^>]+>', '', body)
+
+            # Trim and clean the email body for small models
+            # Remove quoted replies (lines starting with '>'), common signature delimiters, and limit length
+            lines = body.splitlines()
+            cleaned_lines = []
+            for line in lines:
+                # Stop at signature delimiter or reply header
+                if line.strip().startswith('--') or line.strip().startswith('On ') and 'wrote:' in line:
+                    break
+                if line.strip().startswith('>'):
+                    continue
+                cleaned_lines.append(line)
+            trimmed_body = '\n'.join(cleaned_lines).strip()
+            # Limit to first 1000 characters
+            if len(trimmed_body) > 1000:
+                trimmed_body = trimmed_body[:1000] + '...'
+            body = trimmed_body
 
             headers = payload.get('headers', [])
             sender = None
@@ -109,11 +141,22 @@ async def extract_email_tasks(
             print("\n--- EMAIL CONTENT ---")
             print(formatted_email)
             print("--- END EMAIL CONTENT ---\n")
-            # Prompt AI for this email only
+            # Step 1: Ask if the email is promotional/automated
+            from src.task_card_generator.ai_client import is_promotional_email
+            print("[DEBUG] Checking if email is promotional/automated...")
+            promo_result = is_promotional_email(formatted_email)
+            print(f"[DEBUG] is_promotional_email returned: {promo_result}")
+            if promo_result:
+                print("[SKIP] Email detected as promotional/automated. Skipping task extraction.")
+                continue
+            # Step 2: Prompt AI for this email only if not promotional
             ai_response = analyze_emails_for_tasks(formatted_email)
             print("\n[DEBUG] Raw AI response:\n", ai_response, "\n")
             tasks = parse_task_analysis(ai_response)
             all_tasks.extend(tasks)
+            # Mark this email as processed
+            if hasattr(db, 'mark_email_processed'):
+                db.mark_email_processed(msg_id)
         summary = f"Extracted {len(all_tasks)} tasks from emails after {after_date}."
         return {"tasks": all_tasks, "summary": summary}
     except Exception as e:
@@ -156,7 +199,7 @@ async def main():
     print("🔄 Processing...")
 
     # Extract tasks
-    result = await extract_email_tasks(user_email=user_email)
+    result = await extract_email_tasks(user_email=user_email, db=db)
     print(result)
     tasks = result["tasks"]
     summary = result["summary"]

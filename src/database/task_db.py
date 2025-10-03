@@ -66,12 +66,34 @@ class TaskDatabase:
             )
         """)
 
+        # Create table for processed email IDs
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_emails (
+                email_id TEXT PRIMARY KEY
+            )
+        """)
+
         # Create vector index for similarity search
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS tasks_embedding_idx 
             ON tasks(libsql_vector_idx(embedding))
         """)
 
+        self.conn.commit()
+        cursor.close()
+
+    def email_exists(self, email_id: str) -> bool:
+        """Check if an email ID has already been processed."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM processed_emails WHERE email_id = ?", (email_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        return result is not None
+
+    def mark_email_processed(self, email_id: str):
+        """Mark an email ID as processed."""
+        cursor = self.conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO processed_emails (email_id) VALUES (?)", (email_id,))
         self.conn.commit()
         cursor.close()
 

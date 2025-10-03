@@ -1,78 +1,144 @@
+
 """Ollama API client for task generation."""
 
 import os
 import ollama
 
 
+def is_promotional_email(email_content):
+    """Ask the model if the email is promotional/automated. Returns True if promotional, else False."""
+    prompt = f"""
+    Is the following email promotional, marketing, automated, a notification, password reset or sent by a system/robot? Only answer YES or NO.
+
+    Email:
+    {email_content}
+
+    Answer YES if the email is promotional, marketing, automated, notification, password reset or sent by a system/robot (including noreply, no-reply, notification, mailer, robot, bot, do-not-reply, system, admin, support, update, service, info@, etc.).
+    Answer NO if the email is from a real person and requires a genuine response or action.
+
+    Only output YES or NO.
+    """
+    try:
+        response = ollama.chat(
+            model="deepseek-r1:7b",
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.1, "num_predict": 1000}
+        )
+        raw_output = response['message']['content']
+        print(f"[DEBUG] Raw promo check output: {repr(raw_output)}")
+        import re
+        # Remove <think>...</think> blocks
+        no_think = re.sub(r'<think>.*?</think>', '', raw_output, flags=re.DOTALL)
+        # Remove any remaining tags
+        cleaned = re.sub(r'<.*?>', '', no_think, flags=re.DOTALL).strip().upper()
+        cleaned = cleaned.replace('\n', '').replace('\r', '').replace(' ', '')
+        print(f"[DEBUG] Cleaned promo check answer: {cleaned}")
+        has_yes = 'YES' in cleaned
+        has_no = 'NO' in cleaned
+        if has_yes and not has_no:
+            return True
+        elif has_no and not has_yes:
+            return False
+        else:
+            print(f"[WARN] Ambiguous promo check output: {repr(raw_output)}. Treating as NOT promotional.")
+            return False
+    except Exception as e:
+        print(f"[WARN] Promo check failed: {e}")
+        return False
+
 def get_task_from_ai(task_description):
     prompt = f"""
-    Convert this task description into a clear, concise task name:
+    You are an expert assistant. Convert the following task description into a structured JSON object for downstream processing.
 
     Task Description: {task_description}
 
-    Please provide:
-    1. A short, clear task title (max 25 characters)
-    2. Priority level (HIGH, MEDIUM, LOW)
+    Please provide a JSON object with the following fields:
+    {{
+        "title": "A short, clear task title (max 25 characters)",
+        "priority": "HIGH, MEDIUM, or LOW",
+        "deadline": "Any mentioned deadline or 'None'",
+        "reason": "Why this needs attention",
+        "from": "Who requested or sent the task (if known, else 'Unknown')"
+    }}
 
-    Format your response exactly like this:
-    TITLE: [task title]
-    PRIORITY: [priority level]
+    Return ONLY the JSON object. Do not include any explanation, extra text and stick to the formatting. your response will be parsed as JSON by a script.
     """
 
     try:
         response = ollama.chat(
-            model="deepseek-r1:14b",
+            model="deepseek-r1:7b",
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0.3, "num_predict": 10000}
         )
-        return response['message']['content']
+        ai_content = response['message']['content']
+        print(f"[DEBUG] Raw AI output from model:\n{ai_content}\n")
+        # Remove <think>...</think> and stray </think> tags
+        import re
+        cleaned_content = re.sub(r'<think>.*?</think>', '', ai_content, flags=re.DOTALL)
+        cleaned_content = cleaned_content.replace('</think>', '').strip()
+        # Remove Markdown code block markers
+        cleaned_content = re.sub(r'```(?:json)?', '', cleaned_content).strip()
+        # Try to parse as JSON first
+        import json
+        try:
+            data = json.loads(cleaned_content)
+            # If it's a list, take the first task
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                task = data[0]
+                # Normalize keys for compatibility
+                return {
+                    "title": task.get("title", "TASK"),
+                    "priority": task.get("priority", "MEDIUM"),
+                    "deadline": task.get("deadline", "None"),
+                    "reason": task.get("reason", "No reason provided"),
+                    "from": task.get("from", "Unknown"),
+                }
+            elif isinstance(data, dict):
+                return {
+                    "title": data.get("title", "TASK"),
+                    "priority": data.get("priority", "MEDIUM"),
+                    "deadline": data.get("deadline", "None"),
+                    "reason": data.get("reason", "No reason provided"),
+                    "from": data.get("from", "Unknown"),
+                }
+        except Exception:
+            pass
+        # Fallback to legacy parsing
+        return parse_ai_response(ai_content)
     except Exception as e:
-        return f"Error: {str(e)}"
+        return {"title": f"Error: {str(e)}", "priority": "MEDIUM"}
 
 
 def analyze_emails_for_tasks(emails_content):
     """Analyze Gmail emails to identify actionable tasks."""
     prompt = f"""
-    You are an email assistant. Look at this email and identify one or more tasks that require action.
+    You are an email assistant. Only include emails that require a real response or action from you, sent by real people (not automated systems).
 
     Emails:
     {emails_content}
 
-    You may Include:
-    - Meeting invites or webinars
-    - Requests for information or responses
-    - Project updates that need acknowledgment
-    - Anything from real people (not just automated systems)
-    - Time-sensitive content
-    - Collaboration requests
+    INCLUDE:
+    - Meeting invites, requests for info, project updates needing acknowledgment, collaboration, time-sensitive content.
 
-    Do NOT include:
-    - Purely promotional emails with no call to action
-    - Newsletters or informational emails that don't require a response
-    - Social media notifications
-    - System alerts or automated messages with no action needed
-    - Any sales or marketing emails
-    - Promotional, marketing, and automated system emails (e.g., newsletters, offers, sales, login codes, notifications, Quillbot, Ground News, Heavyocity, etc.)
+    EXCLUDE:
+    - Promotional, marketing, newsletters, notifications, system alerts, login codes, password resets, security alerts, and any email from senders like noreply, no-reply, notification, mailer, robot, bot, do-not-reply, system, admin, support, update, service, info@, etc.
 
-    Only include emails that require a genuine response or action from you, especially those sent by real people or related to your work, projects, or meetings.
-
-    For each email that needs ANY kind of action, create a task with:
+    For each actionable email, create a task with:
     - title: What needs to be done
     - from: Who sent it
     - priority: HIGH, MEDIUM, or LOW
     - deadline: Any mentioned deadline or "None"
     - reason: Why this needs attention
 
-    Return ONLY the JSON array. NO explanation and NO extra text other than the JSON array.
-    Return ONLY the tasks in ONLY the following format. : [{{"title": "...", "from": "...", "priority": "...", "deadline": "...", "reason": "..."}}]
-    Your full response will be parsed as JSON by a script.
-    If the email does not require attention simply return []
+    Return ONLY a JSON array of tasks, no explanation or extra text. Example:
+    [{{"title": "...", "from": "...", "priority": "...", "deadline": "...", "reason": "..."}}]
+    If no action is needed, return []
     """
         
 
     try:
         response = ollama.chat(
-            model="deepseek-r1:14b",
+            model="deepseek-r1:7b",
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0.3, "num_predict": 10000}
         )
@@ -90,6 +156,10 @@ def parse_task_analysis(analysis_response):
     # Remove <think>...</think> sections if present
     import re
     cleaned_response = re.sub(r'<think>.*?</think>', '', analysis_response, flags=re.DOTALL)
+    cleaned_response = cleaned_response.replace('</think>', '').strip()
+    # Remove Markdown code block markers
+    cleaned_response = re.sub(r'```(?:json)?', '', cleaned_response).strip()
+
 
     try:
         import json
@@ -117,11 +187,25 @@ def parse_task_analysis(analysis_response):
 
         # Validate and clean up tasks
         valid_tasks = []
+        # List of patterns that indicate an automated sender
+        automated_patterns = [
+            'noreply', 'no-reply', 'notification', 'mailer', 'robot', 'bot',
+            'do-not-reply', 'system', 'admin', 'support', 'update', 'service', 'info@',
+            'donotreply', 'auto', 'automated', 'alerts', 'reminder', 'news', 'digest', 'newsletter', 'bounce', 'daemon', 'postmaster'
+        ]
+        import re
         for task in tasks:
             if isinstance(task, dict) and "title" in task:
                 # Support alternative key names for sender and reason
                 sender = task.get("from") or task.get("sender") or task.get("email") or "Unknown"
                 reason = task.get("reason") or task.get("why") or task.get("description") or "No reason provided"
+                # Filter out tasks with automated senders
+                sender_lower = str(sender).strip().lower()
+                if any(pat in sender_lower for pat in automated_patterns):
+                    continue
+                # Also filter out if sender looks like an email address but is missing a real name
+                if re.match(r"^[^@]+@(noreply|no-reply|notifications?|mailer|robot|bot|do-not-reply|system|admin|support|update|service|info|donotreply|auto|automated|alerts|reminder|news|digest|newsletter|bounce|daemon|postmaster)\.", sender_lower):
+                    continue
                 clean_task = {
                     "title": task.get("title", "").strip()[:50],  # Limit title length
                     "from": str(sender).strip()[:30],  # Limit sender length
